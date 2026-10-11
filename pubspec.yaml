@@ -1,0 +1,21 @@
+name: sectiondraw
+description: SectionDraw - GPS cross-section survey app. Walk from left bank to right bank, capture GPS points, plot and export the section.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  geolocator: '>=13.0.0 <16.0.0'
+  path_provider: ^2.1.0
+  share_plus: '>=11.0.0 <13.0.0'
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
