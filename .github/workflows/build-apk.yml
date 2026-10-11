@@ -39,21 +39,27 @@ jobs:
       - name: Rename APK
         run: cp build/app/outputs/flutter-apk/app-release.apk SectionDraw.apk
 
+      - name: Build small APK for modern phones (arm64)
+        run: |
+          flutter build apk --release --split-per-abi --target-platform android-arm64
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk SectionDraw-arm64.apk
+          ls -la SectionDraw*.apk
+
       - name: Keep APK as build artifact
         uses: actions/upload-artifact@v4
         with:
           name: SectionDraw-apk
-          path: SectionDraw.apk
+          path: SectionDraw*.apk
 
       - name: Publish APK to the "apk-latest" release (direct download link)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete apk-latest --yes --cleanup-tag || true
-          gh release create apk-latest SectionDraw.apk \
+          gh release create apk-latest SectionDraw.apk SectionDraw-arm64.apk \
             --target "$GITHUB_SHA" \
             --title "SectionDraw - latest APK" \
-            --notes "Built automatically from commit ${GITHUB_SHA::7} on $(date -u +'%Y-%m-%d %H:%M UTC'). Install on Android (allow 'Install unknown apps')."
+            --notes "Built automatically from commit ${GITHUB_SHA::7} on $(date -u +'%Y-%m-%d %H:%M UTC'). SectionDraw-arm64.apk is smaller and works on most phones from 2017 onwards; SectionDraw.apk works on all Android phones. Allow 'Install unknown apps' to install."
 
       - name: Unit tests (survey calculations)
         run: flutter test
