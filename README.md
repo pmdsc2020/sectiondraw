@@ -18,6 +18,18 @@ Walk from the **left bank to the right bank**, capture a point every few metres,
 - Points list: edit note, delete point, undo last
 - **Export CSV** (Excel-ready, with summary and all raw GPS data) and **Export PNG** (2000 × 1300 drawing with Distance / RL rows under the section, like a standard engineering cross-section). Export opens the share menu (Drive, Files, WhatsApp, Gmail); a copy is also kept inside the app.
 
+## Look and feel
+
+- Animated opening: the logo draws its cross-section, points pop in, water rises and a GPS pin drops onto the bed
+- **Light, dark or system theme** (sun/moon button on the home screen, remembered on the phone)
+- Glass cards over a softly moving background, Lucide icons with small hover/press animations, rolling numbers
+- Home: totals (sections, points, metres surveyed), search by name or village, sort by newest / name / most points, a profile preview on every card
+- Live GPS card that changes colour with accuracy, with a quality bar and a pulsing signal ring
+- Capture button shows an averaging progress ring; chart draws in from left bank to right bank
+- Accessibility: colours meet WCAG AA contrast (checked by tests), screen-reader labels, 48 dp tap targets, keyboard focus rings,
+  and animations switch off when the phone's "Remove animations" setting is on
+- Works on tablets too (wider two-column layout)
+
 ## Get the APK without installing Flutter (GitHub builds it)
 
 1. On GitHub create a new repository, e.g. `sectiondraw`.
@@ -66,7 +78,10 @@ iPhone (needs a Mac): `flutter create --platforms=ios .` and add `NSLocationWhen
 ## Project layout
 
 ```
-lib/main.dart            app + theme
+lib/main.dart            app entry, light/dark theme switching
+lib/theme.dart           design tokens (colours, typography) and Material themes
+lib/splash_screen.dart   animated logo intro
+lib/ui/                  reusable components: glass cards, buttons, motion, logo, sparkline, theme toggle
 lib/home_screen.dart     section list, new section, rename/delete, about
 lib/section_screen.dart  CAPTURE / POINTS / GRAPH tabs, GPS handling
 lib/section_painter.dart cross-section drawing (screen and PNG)
@@ -74,9 +89,11 @@ lib/export.dart          CSV + PNG export and sharing
 lib/models.dart          data model, distance / elevation / area calculations
 lib/storage.dart         offline JSON storage
 test/models_test.dart    unit tests for the survey calculations
+test/ui_test.dart        colour-contrast checks and UI flow tests
+assets/fonts/            Inter and Space Grotesk (SIL Open Font License), bundled for offline use
 tool/prepare_android.sh  generates Android files + permissions
 ```
 
-Packages: `geolocator` (GPS), `path_provider` (storage), `share_plus` (export sharing).
+Packages: `geolocator` (GPS), `path_provider` (storage), `share_plus` (export sharing), `lucide_icons_flutter` (icons).
 
 Developed by Jitendra Sonawane, Agriculture Engineer, 7720045808

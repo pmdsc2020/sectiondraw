@@ -1,14 +1,21 @@
 import 'dart:async';
-import 'dart:io' show Platform;
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import 'dialogs.dart';
 import 'export.dart';
+import 'home_screen.dart' show menuItem;
 import 'models.dart';
 import 'section_painter.dart';
 import 'storage.dart';
+import 'theme.dart';
+import 'ui/buttons.dart';
+import 'ui/glass.dart';
+import 'ui/motion.dart';
+import 'ui/widgets.dart';
 
 class SectionScreen extends StatefulWidget {
   const SectionScreen({super.key, required this.store, required this.section});
@@ -22,13 +29,11 @@ class SectionScreen extends StatefulWidget {
 
 enum _GpsProblem { none, serviceOff, denied, deniedForever, error }
 
-const _cardBorder = Color(0xFFDDDDDD);
-const _muted = TextStyle(fontSize: 13, color: Colors.black54);
-
 class _SectionScreenState extends State<SectionScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final TabController _tabs = TabController(length: 3, vsync: this);
   final TextEditingController _note = TextEditingController();
+  final TransformationController _zoom = TransformationController();
 
   StreamSubscription<Position>? _sub;
   StreamSubscription<ServiceStatus>? _serviceSub;
@@ -45,6 +50,7 @@ class _SectionScreenState extends State<SectionScreen>
   int _captureLeft = 0;
   final List<Position> _samples = <Position>[];
   bool _exporting = false;
+  bool _exportingPng = false;
 
   CrossSection get s => widget.section;
   SectionStore get store => widget.store;
@@ -85,6 +91,7 @@ class _SectionScreenState extends State<SectionScreen>
     _captureTimer?.cancel();
     _tabs.dispose();
     _note.dispose();
+    _zoom.dispose();
     super.dispose();
   }
 
@@ -99,7 +106,7 @@ class _SectionScreenState extends State<SectionScreen>
   // ---------------------------------------------------------------- GPS
 
   LocationSettings _settings() {
-    if (Platform.isAndroid) {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       return AndroidSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 0,
@@ -188,7 +195,7 @@ class _SectionScreenState extends State<SectionScreen>
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
-        content: Text(msg, style: const TextStyle(fontSize: 16)),
+        content: Text(msg),
         duration: const Duration(seconds: 2),
       ));
   }
@@ -211,7 +218,8 @@ class _SectionScreenState extends State<SectionScreen>
         message:
             'Accuracy is ±${p.accuracy.toStringAsFixed(1)} m (worse than 10 m). '
             'Capture anyway?',
-        yes: 'CAPTURE',
+        yes: 'Capture',
+        icon: LucideIcons.triangleAlert,
       );
       if (!ok || !mounted) return;
     }
@@ -283,8 +291,10 @@ class _SectionScreenState extends State<SectionScreen>
       _note.clear();
     });
     store.save();
+    HapticFeedback.mediumImpact();
     final i = s.points.length;
-    _snack(n > 1 ? 'Point $i saved (average of $n readings)' : 'Point $i saved');
+    _snack(
+        n > 1 ? 'Point $i saved (average of $n readings)' : 'Point $i saved');
   }
 
   Future<void> _undoLast() async {
@@ -308,7 +318,10 @@ class _SectionScreenState extends State<SectionScreen>
             'point 2 becomes the reference point.'
         : 'Point ${i + 1} will be removed.';
     final ok = await confirm(context,
-        title: 'Delete point ${i + 1}?', message: msg, yes: 'DELETE', danger: true);
+        title: 'Delete point ${i + 1}?',
+        message: msg,
+        yes: 'DELETE',
+        danger: true);
     if (!ok || !mounted) return;
     setState(() => s.points.removeAt(i));
     store.save();
@@ -318,7 +331,8 @@ class _SectionScreenState extends State<SectionScreen>
     final v = await askText(context,
         title: 'Note for point ${i + 1}',
         initial: s.points[i].note,
-        label: 'Note (e.g. Left bank, Bed)');
+        label: 'Note (e.g. Left bank, Bed)',
+        icon: LucideIcons.notebookPen);
     if (v == null || !mounted) return;
     setState(() => s.points[i].note = v.trim());
     store.save();
@@ -330,6 +344,7 @@ class _SectionScreenState extends State<SectionScreen>
       title: 'Reference elevation',
       initial: s.refElevation?.toStringAsFixed(3) ?? '',
       label: 'Elevation of FIRST point (m)',
+      icon: LucideIcons.arrowDownToLine,
       help: 'Other points = this value + their GPS height difference from '
           'point 1. Leave empty to use raw GPS altitude.',
       numeric: true,
@@ -360,7 +375,10 @@ class _SectionScreenState extends State<SectionScreen>
 
   Future<void> _export({required bool png}) async {
     if (_exporting) return;
-    setState(() => _exporting = true);
+    setState(() {
+      _exporting = true;
+      _exportingPng = png;
+    });
     try {
       final f = png ? await exportPng(s) : await exportCsv(s);
       await shareFile(f, '${s.name} - cross-section');
@@ -373,83 +391,194 @@ class _SectionScreenState extends State<SectionScreen>
 
   // ---------------------------------------------------------------- UI
 
+  Future<void> _more(String a) async {
+    switch (a) {
+      case 'rename':
+        await _rename();
+      case 'location':
+        final v = await askText(context,
+            title: 'Village / location',
+            initial: s.location,
+            label: 'Village, nala, chainage...',
+            icon: LucideIcons.mapPin);
+        if (v == null || !mounted) return;
+        setState(() => s.location = v.trim());
+        store.save();
+      case 'ref':
+        await _setReference();
+      case 'csv':
+        await _export(png: false);
+      case 'png':
+        await _export(png: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final c = context.colors;
+    final sub = [
+      if (s.location.trim().isNotEmpty) s.location.trim(),
+      '${s.points.length} point${s.points.length == 1 ? '' : 's'}',
+    ].join('  ·  ');
     return Scaffold(
-      appBar: AppBar(
-        title: Text(s.name, overflow: TextOverflow.ellipsis),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.edit),
-            tooltip: 'Rename',
-            onPressed: _rename,
+      backgroundColor: Colors.transparent,
+      body: AuroraBackground(
+        child: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 10, 4),
+                child: Row(
+                  children: [
+                    IconPill(
+                      icon: LucideIcons.arrowLeft,
+                      tooltip: 'Back to sections',
+                      motion: IconMotion.nudge,
+                      onPressed: () => Navigator.maybePop(context),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Semantics(
+                            header: true,
+                            child: Text(s.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: display(21, color: c.text)),
+                          ),
+                          Text(sub,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 13, color: c.muted)),
+                        ],
+                      ),
+                    ),
+                    IconPill(
+                      icon: LucideIcons.pencil,
+                      tooltip: 'Rename section',
+                      motion: IconMotion.wiggle,
+                      onPressed: _rename,
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: 'More actions',
+                      icon: Icon(LucideIcons.ellipsisVertical, color: c.text),
+                      onSelected: _more,
+                      itemBuilder: (ctx) => [
+                        menuItem(ctx, 'rename', LucideIcons.pencil, 'Rename'),
+                        menuItem(ctx, 'location', LucideIcons.mapPin,
+                            'Edit location'),
+                        menuItem(ctx, 'ref', LucideIcons.arrowDownToLine,
+                            'Reference elevation'),
+                        if (s.points.length >= 2) ...[
+                          const PopupMenuDivider(),
+                          menuItem(ctx, 'csv', LucideIcons.fileSpreadsheet,
+                              'Export CSV'),
+                          menuItem(
+                              ctx, 'png', LucideIcons.fileImage, 'Export PNG'),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              _tabBar(),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabs,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    _page(_captureTab()),
+                    _page(_pointsTab()),
+                    _page(_graphTab(), maxWidth: 980),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-        bottom: TabBar(
-          controller: _tabs,
-          labelColor: Colors.white,
-          unselectedLabelColor: const Color(0xB3FFFFFF),
-          indicatorColor: Colors.white,
-          indicatorWeight: 4,
-          labelStyle:
-              const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-          tabs: const [
-            Tab(icon: Icon(Icons.gps_fixed), text: 'CAPTURE'),
-            Tab(icon: Icon(Icons.format_list_numbered), text: 'POINTS'),
-            Tab(icon: Icon(Icons.show_chart), text: 'GRAPH'),
-          ],
         ),
-      ),
-      body: TabBarView(
-        controller: _tabs,
-        physics: const NeverScrollableScrollPhysics(),
-        children: [_captureTab(), _pointsTab(), _graphTab()],
       ),
     );
   }
 
-  Widget _box({required Widget child, EdgeInsets? padding}) => Container(
-        padding: padding ?? const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: _cardBorder),
+  /// Centres tab content and caps its width on tablets / desktop.
+  Widget _page(Widget child, {double maxWidth = 720}) => Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxWidth),
+          child: child,
         ),
-        child: child,
       );
 
-  Widget _stat(String label, String value) => _box(
-        child: Column(
-          children: [
-            Text(label,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black54)),
-            const SizedBox(height: 2),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(value,
-                  style: const TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.bold)),
+  Widget _tabBar() {
+    final c = context.colors;
+    Tab tab(IconData icon, String label) => Tab(
+          height: 50,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18),
+              const SizedBox(width: 7),
+              Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+            ],
+          ),
+        );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 8),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: GlassCard(
+          padding: const EdgeInsets.all(5),
+          radius: 20,
+          child: TabBar(
+            controller: _tabs,
+            dividerColor: Colors.transparent,
+            indicatorSize: TabBarIndicatorSize.tab,
+            splashBorderRadius: BorderRadius.circular(15),
+            indicator: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              gradient: const LinearGradient(
+                  colors: [Color(0xFF047857), Color(0xFF0E7490)]),
+              boxShadow: [BoxShadow(color: c.glow, blurRadius: 14)],
             ),
-          ],
+            labelColor: Colors.white,
+            unselectedLabelColor: c.muted,
+            labelStyle: const TextStyle(
+                fontFamily: kBodyFont,
+                fontSize: 14.5,
+                fontWeight: FontWeight.w700),
+            unselectedLabelStyle: const TextStyle(
+                fontFamily: kBodyFont,
+                fontSize: 14.5,
+                fontWeight: FontWeight.w600),
+            tabs: [
+              tab(LucideIcons.crosshair, 'Capture'),
+              tab(LucideIcons.listOrdered, 'Points'),
+              tab(LucideIcons.chartSpline, 'Graph'),
+            ],
+          ),
         ),
-      );
+      ),
+    );
+  }
 
-  Widget _emptyMsg(String t) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Text(t,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 18)),
-        ),
+  Widget _emptyMsg(IconData icon, String title, String t,
+          {String? action, VoidCallback? onAction}) =>
+      EmptyState(
+        icon: icon,
+        title: title,
+        message: t,
+        actionLabel: action,
+        actionIcon: LucideIcons.crosshair,
+        onAction: onAction,
       );
 
   // ----- Capture tab
 
   Widget _captureTab() {
+    final c = context.colors;
     final p = _pos;
     final last = s.points.isEmpty ? null : s.points.last;
     double? fromLast;
@@ -458,293 +587,560 @@ class _SectionScreenState extends State<SectionScreen>
     }
     final d = s.distances(DistanceMode.cumulative);
     final walked = d.isEmpty ? 0.0 : d.last;
+    final secs = store.avgSeconds;
+    const notes = <(String, IconData)>[
+      ('Left bank', LucideIcons.arrowRightFromLine),
+      ('Bed', LucideIcons.arrowDownToLine),
+      ('Water edge', LucideIcons.waves),
+      ('Right bank', LucideIcons.arrowLeftToLine),
+    ];
+
+    var i = 0;
+    Widget item(Widget w) => FadeSlideIn(index: i++, child: w);
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 30),
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 36),
       children: [
-        _gpsCard(),
+        item(_gpsCard()),
         const SizedBox(height: 12),
-        Row(
+        item(IntrinsicHeight(
+            child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(child: _stat('POINTS', '${s.points.length}')),
-            const SizedBox(width: 8),
             Expanded(
-              child: _stat('FROM LAST',
-                  fromLast == null ? '—' : '${fromLast.toStringAsFixed(1)} m'),
-            ),
-            const SizedBox(width: 8),
-            Expanded(child: _stat('WALKED', '${walked.toStringAsFixed(1)} m')),
-          ],
-        ),
-        const SizedBox(height: 12),
-        _refCard(),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _note,
-          style: const TextStyle(fontSize: 18),
-          decoration: const InputDecoration(
-            labelText: 'Note for next point (optional)',
-            border: OutlineInputBorder(),
-            filled: true,
-            fillColor: Colors.white,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 8,
-          runSpacing: 2,
-          children: [
-            for (final t in const ['Left bank', 'Bed', 'Water edge', 'Right bank'])
-              ActionChip(
-                label: Text(t, style: const TextStyle(fontSize: 15)),
-                onPressed: () => setState(() => _note.text = t),
+              child: StatTile(
+                icon: LucideIcons.circleDot,
+                label: 'Points',
+                value: '${s.points.length}',
+                onTap: s.points.isEmpty ? null : () => _tabs.animateTo(1),
               ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            const Text('Average:',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
             const SizedBox(width: 10),
             Expanded(
-              child: SegmentedButton<int>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment<int>(value: 0, label: Text('Off')),
-                  ButtonSegment<int>(value: 5, label: Text('5 sec')),
-                  ButtonSegment<int>(value: 10, label: Text('10 sec')),
+              child: StatTile(
+                icon: LucideIcons.moveHorizontal,
+                label: 'From last',
+                value:
+                    fromLast == null ? '—' : '${fromLast.toStringAsFixed(1)} m',
+                color: c.water,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: StatTile(
+                icon: LucideIcons.footprints,
+                label: 'Walked',
+                value: '${walked.toStringAsFixed(1)} m',
+                color: c.accent,
+              ),
+            ),
+          ],
+        ))),
+        const SizedBox(height: 12),
+        item(_refCard()),
+        const SizedBox(height: 12),
+        item(GlassCard(
+          blur: false,
+          strong: true,
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _note,
+                onChanged: (_) => setState(() {}),
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w500),
+                decoration: InputDecoration(
+                  labelText: 'Note for next point (optional)',
+                  prefixIcon:
+                      Icon(LucideIcons.notebookPen, size: 20, color: c.muted),
+                  suffixIcon: _note.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear note',
+                          icon: Icon(LucideIcons.x, size: 20, color: c.text),
+                          onPressed: () => setState(_note.clear),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final (t, icon) in notes)
+                    SelectChip(
+                      label: t,
+                      icon: icon,
+                      selected: _note.text == t,
+                      onTap: () =>
+                          setState(() => _note.text = _note.text == t ? '' : t),
+                    ),
                 ],
-                selected: <int>{store.avgSeconds},
-                onSelectionChanged: _capturing
-                    ? null
-                    : (v) {
-                        setState(() => store.avgSeconds = v.first);
-                        store.save();
-                      },
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          height: 92,
-          child: FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor:
-                  _capturing ? const Color(0xFFEF6C00) : const Color(0xFF1B5E20),
-              foregroundColor: Colors.white,
-              textStyle:
-                  const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18)),
-            ),
-            onPressed: _capture,
-            icon: _capturing
-                ? const SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 3, color: Colors.white),
-                  )
-                : const Icon(Icons.add_location_alt, size: 34),
-            label: Text(_capturing
-                ? 'AVERAGING… $_captureLeft s'
-                : 'CAPTURE POINT ${s.points.length + 1}'),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Icon(LucideIcons.timer, size: 18, color: c.muted),
+                  const SizedBox(width: 8),
+                  Text('Averaging',
+                      style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: c.text)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: SegmentedButton<int>(
+                      showSelectedIcon: false,
+                      segments: const [
+                        ButtonSegment<int>(value: 0, label: Text('Off')),
+                        ButtonSegment<int>(value: 5, label: Text('5 s')),
+                        ButtonSegment<int>(value: 10, label: Text('10 s')),
+                      ],
+                      selected: <int>{secs},
+                      onSelectionChanged: _capturing
+                          ? null
+                          : (v) {
+                              setState(() => store.avgSeconds = v.first);
+                              store.save();
+                            },
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ),
+        )),
+        const SizedBox(height: 16),
+        item(TweenAnimationBuilder<double>(
+          tween: Tween(
+            begin: 0,
+            end: _capturing && secs > 0 ? (secs - _captureLeft + 1) / secs : 0,
+          ),
+          duration: _capturing ? const Duration(seconds: 1) : Duration.zero,
+          builder: (context, v, _) => GlowButton(
+            height: 92,
+            fontSize: 21,
+            iconMotion: IconMotion.bounce,
+            colors: _capturing
+                ? const [Color(0xFFB45309), Color(0xFFC2410C)]
+                : null,
+            progress: _capturing ? v : null,
+            icon: LucideIcons.mapPinPlus,
+            label: _capturing
+                ? 'Averaging… $_captureLeft s'
+                : 'Capture point ${s.points.length + 1}',
+            semanticLabel: _capturing
+                ? 'Averaging GPS readings, $_captureLeft seconds left'
+                : 'Capture point ${s.points.length + 1}',
+            onPressed: _capturing ? () {} : _capture,
+          ),
+        )),
         const SizedBox(height: 12),
-        Row(
+        item(Row(
           children: [
             Expanded(
-              child: OutlinedButton.icon(
+              child: GhostButton(
+                label: 'Undo last',
+                icon: LucideIcons.undo2,
+                iconMotion: IconMotion.wiggle,
+                color: c.danger,
                 onPressed: (s.points.isEmpty || _capturing) ? null : _undoLast,
-                icon: const Icon(Icons.undo),
-                label: const Text('UNDO LAST'),
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: OutlinedButton.icon(
+              child: GhostButton(
+                label: 'View graph',
+                icon: LucideIcons.chartSpline,
+                iconMotion: IconMotion.nudge,
                 onPressed: () => _tabs.animateTo(2),
-                icon: const Icon(Icons.show_chart),
-                label: const Text('GRAPH'),
               ),
             ),
           ],
-        ),
+        )),
         if (last != null) ...[
           const SizedBox(height: 12),
-          Text(
-            'Last: point ${s.points.length}  ·  '
-            'elev ${s.elevationOf(s.points.length - 1).toStringAsFixed(2)} m  ·  '
-            '±${last.hAcc.toStringAsFixed(1)} m'
-            '${last.note.isEmpty ? '' : '  ·  ${last.note}'}',
-            style: const TextStyle(fontSize: 15, color: Colors.black87),
-          ),
+          item(_lastPointCard(last)),
         ],
-        const SizedBox(height: 10),
-        const Text(
+        const SizedBox(height: 14),
+        item(const HintText(
           'Walk from LEFT bank to RIGHT bank (facing downstream). Hold the '
           'phone at the same height for every point and let accuracy settle '
           'before capturing.',
-          style: _muted,
-        ),
+          icon: LucideIcons.lightbulb,
+        )),
       ],
+    );
+  }
+
+  Widget _lastPointCard(SectionPoint last) {
+    final c = context.colors;
+    final n = s.points.length;
+    return GlassCard(
+      blur: false,
+      strong: true,
+      onTap: () => _tabs.animateTo(1),
+      semanticLabel: 'Last point $n. Open points list',
+      padding: const EdgeInsets.fromLTRB(12, 12, 14, 12),
+      child: Row(
+        children: [
+          _numberBadge(n, false),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('LAST POINT', style: eyebrow(c.muted)),
+                const SizedBox(height: 2),
+                Text(
+                  'El ${s.elevationOf(n - 1).toStringAsFixed(2)} m  ·  '
+                  '±${last.hAcc.toStringAsFixed(1)} m',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: c.text,
+                      fontFeatures: kTabular),
+                ),
+                if (last.note.isNotEmpty)
+                  Text(last.note,
+                      style: TextStyle(fontSize: 14, color: c.muted)),
+              ],
+            ),
+          ),
+          Icon(LucideIcons.chevronRight, color: c.muted),
+        ],
+      ),
     );
   }
 
   Widget _gpsCard() {
     if (_problem != _GpsProblem.none) return _problemCard();
+    final c = context.colors;
     final p = _pos;
     final age = _fixAge;
     Color bg;
     String status;
+    IconData statusIcon;
     if (p == null) {
-      bg = const Color(0xFF616161);
-      status = 'WAITING FOR GPS…';
+      bg = c.idle;
+      status = 'Waiting for GPS…';
+      statusIcon = LucideIcons.satellite;
     } else if (age >= 3) {
-      bg = const Color(0xFF616161);
-      status = 'NO NEW FIX (${age}s)';
+      bg = c.idle;
+      status = 'No new fix (${age}s)';
+      statusIcon = LucideIcons.signalLow;
     } else if (p.accuracy <= 5) {
-      bg = const Color(0xFF2E7D32);
-      status = 'GOOD';
+      bg = c.good;
+      status = 'Good';
+      statusIcon = LucideIcons.shieldCheck;
     } else if (p.accuracy <= 10) {
-      bg = const Color(0xFFE65100);
-      status = 'FAIR';
+      bg = c.fair;
+      status = 'Fair';
+      statusIcon = LucideIcons.signalMedium;
     } else {
-      bg = const Color(0xFFC62828);
-      status = 'POOR';
+      bg = c.poor;
+      status = 'Poor';
+      statusIcon = LucideIcons.triangleAlert;
     }
-    return Card(
-      color: bg,
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.gps_fixed, color: Colors.white),
-                const SizedBox(width: 8),
-                const Text('GPS ACCURACY',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold)),
-                const Spacer(),
-                Text(status,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold)),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              p == null ? '— —' : '± ${p.accuracy.toStringAsFixed(1)} m',
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 44,
-                  fontWeight: FontWeight.bold),
-            ),
-            if (p != null) ...[
-              Text(
-                'Vertical ${p.altitudeAccuracy > 0 ? '± ${p.altitudeAccuracy.toStringAsFixed(1)} m' : 'n/a'}'
-                '   ·   GPS alt ${p.altitude.toStringAsFixed(1)} m',
-                style: const TextStyle(color: Colors.white, fontSize: 16),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}',
-                style: const TextStyle(color: Color(0xDDFFFFFF), fontSize: 15),
-              ),
-            ] else
-              const Text(
-                'Stand in open sky. The first fix can take up to a minute.',
-                style: TextStyle(color: Colors.white, fontSize: 15),
-              ),
+    final live = p != null && age < 3;
+    // 0 m -> full bar, 20 m or worse -> empty.
+    final quality = p == null ? 0.0 : (1 - p.accuracy / 20).clamp(0.04, 1.0);
+    const fg = Colors.white;
+    const fgSoft = Color(0xE6FFFFFF);
+
+    return Semantics(
+      liveRegion: true,
+      label: p == null
+          ? 'GPS: $status'
+          : 'GPS accuracy plus or minus ${p.accuracy.toStringAsFixed(1)} metres, $status',
+      child: AnimatedContainer(
+        duration: Motion.of(context, Motion.slow),
+        curve: Motion.emphasized,
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [bg, Color.alphaBlend(Colors.black.withAlpha(50), bg)],
+          ),
+          boxShadow: [
+            BoxShadow(
+                color: bg.withAlpha(90),
+                blurRadius: 24,
+                offset: const Offset(0, 10)),
           ],
+        ),
+        child: ExcludeSemantics(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  _Radar(
+                      active: live,
+                      child: const Icon(LucideIcons.locateFixed,
+                          color: fg, size: 20)),
+                  const SizedBox(width: 10),
+                  Text('GPS ACCURACY', style: eyebrow(fgSoft)),
+                  const Spacer(),
+                  AnimatedSwitcher(
+                    duration: Motion.of(context, Motion.medium),
+                    layoutBuilder: (current, previous) => Stack(
+                      alignment: Alignment.centerRight,
+                      children: [...previous, if (current != null) current],
+                    ),
+                    transitionBuilder: (child, a) => FadeTransition(
+                      opacity: a,
+                      child: ScaleTransition(scale: a, child: child),
+                    ),
+                    child: Container(
+                      key: ValueKey(status),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(46),
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(statusIcon, size: 15, color: fg),
+                          const SizedBox(width: 6),
+                          Text(status,
+                              style: const TextStyle(
+                                  color: fg,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: RollingText(
+                  p == null ? '— —' : '± ${p.accuracy.toStringAsFixed(1)} m',
+                  style: display(46, color: fg, letterSpacing: -1.5),
+                ),
+              ),
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(99),
+                child: Container(
+                  height: 7,
+                  color: Colors.black.withAlpha(50),
+                  alignment: Alignment.centerLeft,
+                  child: AnimatedFractionallySizedBox(
+                    duration: Motion.of(context, Motion.slow),
+                    curve: Motion.emphasized,
+                    widthFactor: quality,
+                    heightFactor: 1,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: fg,
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (p != null) ...[
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 6,
+                  children: [
+                    _gpsFact(LucideIcons.arrowUpDown,
+                        'Vertical ${p.altitudeAccuracy > 0 ? '± ${p.altitudeAccuracy.toStringAsFixed(1)} m' : 'n/a'}'),
+                    _gpsFact(LucideIcons.mountain,
+                        'GPS alt ${p.altitude.toStringAsFixed(1)} m'),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                _gpsFact(LucideIcons.mapPin,
+                    '${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}'),
+              ] else
+                const Text(
+                  'Stand in open sky. The first fix can take up to a minute.',
+                  style: TextStyle(color: fg, fontSize: 15, height: 1.4),
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
 
+  Widget _gpsFact(IconData icon, String text) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: const Color(0xE6FFFFFF)),
+          const SizedBox(width: 6),
+          Text(text,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w500,
+                  fontFeatures: kTabular)),
+        ],
+      );
+
   Widget _problemCard() {
-    return Card(
-      color: const Color(0xFFFFF3E0),
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.location_off,
-                    color: Color(0xFFC62828), size: 30),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(_problemText,
-                      style: const TextStyle(
-                          fontSize: 17, fontWeight: FontWeight.bold)),
+    final c = context.colors;
+    return GlassCard(
+      strong: true,
+      tint: c.danger,
+      radius: 24,
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: c.danger.withAlpha(36),
+                  shape: BoxShape.circle,
                 ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (_problem == _GpsProblem.serviceOff)
-              FilledButton(
-                onPressed: () => Geolocator.openLocationSettings(),
-                child: const Text('TURN ON LOCATION'),
+                child: Icon(LucideIcons.locateOff, color: c.danger, size: 24),
               ),
-            if (_problem == _GpsProblem.deniedForever)
-              FilledButton(
-                onPressed: () => Geolocator.openAppSettings(),
-                child: const Text('OPEN APP SETTINGS'),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(_problemText,
+                    style: TextStyle(
+                        fontSize: 16.5,
+                        fontWeight: FontWeight.w600,
+                        height: 1.35,
+                        color: c.text)),
               ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: _startGps,
-              child: const Text('TRY AGAIN'),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (_problem == _GpsProblem.serviceOff) ...[
+            GlowButton(
+              label: 'Turn on location',
+              icon: LucideIcons.mapPin,
+              height: 54,
+              fontSize: 16,
+              onPressed: () => Geolocator.openLocationSettings(),
             ),
+            const SizedBox(height: 10),
           ],
-        ),
+          if (_problem == _GpsProblem.deniedForever) ...[
+            GlowButton(
+              label: 'Open app settings',
+              icon: LucideIcons.settings,
+              iconMotion: IconMotion.spin,
+              height: 54,
+              fontSize: 16,
+              onPressed: () => Geolocator.openAppSettings(),
+            ),
+            const SizedBox(height: 10),
+          ],
+          GhostButton(
+            label: 'Try again',
+            icon: LucideIcons.refreshCw,
+            iconMotion: IconMotion.spin,
+            onPressed: _startGps,
+          ),
+        ],
       ),
     );
   }
 
   Widget _refCard() {
+    final c = context.colors;
     final ref = s.refElevation;
-    return _box(
-      padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+    return GlassCard(
+      blur: false,
+      strong: true,
+      onTap: _setReference,
+      semanticLabel: ref == null
+          ? 'Elevation basis: raw GPS altitude. Tap to set reference'
+          : 'Elevation basis: point 1 equals ${ref.toStringAsFixed(3)} metres. Tap to change',
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
       child: Row(
         children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: c.accent.withAlpha(32),
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: Icon(LucideIcons.arrowDownToLine, color: c.accent, size: 21),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('ELEVATION BASIS',
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black54)),
+                Text('ELEVATION BASIS', style: eyebrow(c.muted)),
+                const SizedBox(height: 2),
                 Text(
                   ref == null
                       ? 'Raw GPS altitude'
                       : 'Point 1 = ${ref.toStringAsFixed(3)} m (local)',
-                  style: const TextStyle(
-                      fontSize: 17, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: c.text,
+                      fontFeatures: kTabular),
                 ),
               ],
             ),
           ),
-          FilledButton.tonal(
-            onPressed: _setReference,
-            child: const Text('SET REF'),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: context.scheme.primary.withAlpha(28),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(LucideIcons.pencil,
+                    size: 15, color: context.scheme.primary),
+                const SizedBox(width: 6),
+                Text('Set ref',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: context.scheme.primary)),
+              ],
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _numberBadge(int n, bool lowest) {
+    final c = context.colors;
+    // White text on these fills is >= 4.5:1.
+    final colors = lowest
+        ? const [Color(0xFF0369A1), Color(0xFF1D4ED8)]
+        : const [Color(0xFF047857), Color(0xFF0E7490)];
+    return Container(
+      width: 44,
+      height: 44,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(colors: colors),
+        boxShadow: [BoxShadow(color: c.glow, blurRadius: 10)],
+      ),
+      child:
+          Text('$n', style: display(17, color: Colors.white, letterSpacing: 0)),
     );
   }
 
@@ -752,66 +1148,123 @@ class _SectionScreenState extends State<SectionScreen>
 
   Widget _pointsTab() {
     if (s.points.isEmpty) {
-      return _emptyMsg('No points yet.\n\nGo to CAPTURE and record the first '
-          'point on the left bank.');
+      return _emptyMsg(
+        LucideIcons.mapPinned,
+        'No points yet',
+        'Go to Capture and record the first point on the left bank.',
+        action: 'Start capturing',
+        onAction: () => _tabs.animateTo(0),
+      );
     }
     final d = s.distances();
+    var lowIdx = 0;
+    for (var i = 1; i < s.points.length; i++) {
+      if (s.elevationOf(i) < s.elevationOf(lowIdx)) lowIdx = i;
+    }
     return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 30),
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 36),
       children: [
         _refCard(),
-        const SizedBox(height: 6),
-        Text(
+        const SizedBox(height: 10),
+        HintText(
           s.mode == DistanceMode.cumulative
-              ? 'Distance: walked path from point 1'
-              : 'Distance: along straight line point 1 → last point',
-          style: _muted,
+              ? 'Distance: walked path from point 1. Tap a point to edit its note.'
+              : 'Distance: along straight line point 1 → last point. Tap a '
+                  'point to edit its note.',
+          icon: s.mode == DistanceMode.cumulative
+              ? LucideIcons.footprints
+              : LucideIcons.moveHorizontal,
         ),
-        const SizedBox(height: 6),
-        for (var i = 0; i < s.points.length; i++) _pointTile(i, d[i]),
+        const SizedBox(height: 10),
+        for (var i = 0; i < s.points.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: FadeSlideIn(
+              key: ValueKey('pt-$i-${s.points[i].time.microsecondsSinceEpoch}'),
+              index: i,
+              child: _pointTile(i, d[i], i == lowIdx && s.points.length > 1),
+            ),
+          ),
       ],
     );
   }
 
-  Widget _pointTile(int i, double dist) {
+  Widget _pointTile(int i, double dist, bool lowest) {
+    final c = context.colors;
     final p = s.points[i];
-    final info = <String>[
-      '±${p.hAcc.toStringAsFixed(1)} m',
-      if (p.samples > 1) 'avg ${p.samples}',
-      fmtDateTime(p.time).substring(11),
-      if (p.note.isNotEmpty) p.note,
-    ];
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        contentPadding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
-        leading: CircleAvatar(
-          radius: 22,
-          backgroundColor: const Color(0xFF5D4037),
-          foregroundColor: Colors.white,
-          child: Text('${i + 1}',
-              style:
-                  const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-        ),
-        title: Text(
-          '${dist.toStringAsFixed(2)} m   ·   El ${s.elevationOf(i).toStringAsFixed(2)} m',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(info.join('  ·  '), style: const TextStyle(fontSize: 14)),
-        trailing: PopupMenuButton<String>(
-          icon: const Icon(Icons.more_vert, size: 28),
-          onSelected: (a) {
-            if (a == 'note') {
-              _editNote(i);
-            } else {
-              _deletePoint(i);
-            }
-          },
-          itemBuilder: (_) => const <PopupMenuEntry<String>>[
-            PopupMenuItem<String>(value: 'note', child: Text('Edit note')),
-            PopupMenuItem<String>(value: 'delete', child: Text('Delete point')),
-          ],
-        ),
+    return GlassCard(
+      blur: false,
+      strong: true,
+      onTap: () => _editNote(i),
+      semanticLabel: 'Point ${i + 1}, distance ${dist.toStringAsFixed(2)} '
+          'metres, elevation ${s.elevationOf(i).toStringAsFixed(2)} metres'
+          '${p.note.isEmpty ? '' : ', ${p.note}'}. Tap to edit note',
+      padding: const EdgeInsets.fromLTRB(12, 12, 2, 12),
+      child: Row(
+        children: [
+          _numberBadge(i + 1, lowest),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text.rich(
+                  TextSpan(children: [
+                    TextSpan(text: '${dist.toStringAsFixed(2)} m'),
+                    TextSpan(
+                        text: '   El ',
+                        style: TextStyle(color: c.muted, fontSize: 14)),
+                    TextSpan(
+                        text: '${s.elevationOf(i).toStringAsFixed(2)} m',
+                        style: TextStyle(color: lowest ? c.water : c.text)),
+                  ]),
+                  style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: c.text,
+                      fontFeatures: kTabular),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (lowest)
+                      const InfoChip(
+                          icon: LucideIcons.droplet, label: 'Lowest'),
+                    InfoChip(
+                        icon: LucideIcons.crosshair,
+                        label: '±${p.hAcc.toStringAsFixed(1)} m'),
+                    if (p.samples > 1)
+                      InfoChip(
+                          icon: LucideIcons.timer, label: 'avg ${p.samples}'),
+                    InfoChip(
+                        icon: LucideIcons.clock,
+                        label: fmtDateTime(p.time).substring(11)),
+                    if (p.note.isNotEmpty)
+                      InfoChip(icon: LucideIcons.notebookPen, label: p.note),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'Actions for point ${i + 1}',
+            icon: Icon(LucideIcons.ellipsisVertical, color: c.text),
+            onSelected: (a) {
+              if (a == 'note') {
+                _editNote(i);
+              } else {
+                _deletePoint(i);
+              }
+            },
+            itemBuilder: (ctx) => [
+              menuItem(ctx, 'note', LucideIcons.notebookPen, 'Edit note'),
+              menuItem(ctx, 'delete', LucideIcons.trash2, 'Delete point',
+                  danger: true),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -819,14 +1272,20 @@ class _SectionScreenState extends State<SectionScreen>
   // ----- Graph tab
 
   Widget _graphTab() {
+    final c = context.colors;
     final prof = s.profile();
     final sum = SectionSummary.of(prof);
     if (sum == null) {
-      return _emptyMsg('Capture at least 2 points to see the cross-section '
-          'graph.');
+      return _emptyMsg(
+        LucideIcons.chartSpline,
+        'Not enough points',
+        'Capture at least 2 points to see the cross-section graph.',
+        action: 'Go to capture',
+        onAction: () => _tabs.animateTo(0),
+      );
     }
     return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 30),
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 36),
       children: [
         SegmentedButton<DistanceMode>(
           showSelectedIcon: false,
@@ -834,12 +1293,12 @@ class _SectionScreenState extends State<SectionScreen>
             ButtonSegment<DistanceMode>(
               value: DistanceMode.cumulative,
               label: Text('Walked path'),
-              icon: Icon(Icons.timeline),
+              icon: Icon(LucideIcons.footprints, size: 18),
             ),
             ButtonSegment<DistanceMode>(
               value: DistanceMode.projected,
               label: Text('Straight line'),
-              icon: Icon(Icons.straighten),
+              icon: Icon(LucideIcons.moveHorizontal, size: 18),
             ),
           ],
           selected: <DistanceMode>{s.mode},
@@ -848,104 +1307,278 @@ class _SectionScreenState extends State<SectionScreen>
             store.save();
           },
         ),
-        const SizedBox(height: 4),
-        Text(
+        const SizedBox(height: 8),
+        HintText(
           s.mode == DistanceMode.cumulative
               ? 'Distance = sum of distances between consecutive points.'
               : 'Distance measured along the straight line from point 1 to '
                   'the last point (removes zig-zag of walking).',
-          style: _muted,
         ),
-        const SizedBox(height: 10),
-        Container(
-          height: 380,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: _cardBorder),
-          ),
-          child: InteractiveViewer(
-            minScale: 1,
-            maxScale: 6,
-            child: SizedBox.expand(
-              child: CustomPaint(
-                painter: SectionPainter(
-                  profile: prof,
-                  style: ChartStyle.screen,
-                  label: PointLabel.elevation,
-                ),
+        const SizedBox(height: 12),
+        GlassCard(
+          strong: true,
+          padding: EdgeInsets.zero,
+          semanticLabel: 'Cross-section graph, ${prof.length} points, '
+              'width ${sum.width.toStringAsFixed(1)} metres',
+          child: SizedBox(
+            height: 380,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(22),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: TweenAnimationBuilder<double>(
+                      key: ValueKey('${s.mode}-${prof.length}'),
+                      tween: Tween(begin: 0, end: 1),
+                      duration:
+                          Motion.of(context, const Duration(milliseconds: 900)),
+                      curve: Curves.easeInOutCubic,
+                      builder: (context, t, child) => ClipRect(
+                        clipper: _RevealClipper(t),
+                        child: child,
+                      ),
+                      child: InteractiveViewer(
+                        transformationController: _zoom,
+                        minScale: 1,
+                        maxScale: 6,
+                        child: SizedBox.expand(
+                          child: CustomPaint(
+                            painter: SectionPainter(
+                              profile: prof,
+                              style: context.isDark
+                                  ? ChartStyle.screenDark
+                                  : ChartStyle.screen,
+                              label: PointLabel.elevation,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: IconPill(
+                      icon: LucideIcons.scan,
+                      tooltip: 'Reset zoom',
+                      motion: IconMotion.pop,
+                      size: 44,
+                      onPressed: () => _zoom.value = Matrix4.identity(),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
         ),
-        const SizedBox(height: 4),
-        const Text('Pinch to zoom. Labels = elevation (m). Blue = lowest point.',
-            style: _muted),
-        const SizedBox(height: 12),
-        _summaryGrid(sum),
+        const SizedBox(height: 8),
+        const HintText(
+            'Pinch to zoom. Labels = elevation (m). Blue = lowest point.',
+            icon: LucideIcons.zoomIn),
         const SizedBox(height: 14),
+        _summaryGrid(sum, c),
+        const SizedBox(height: 16),
         Row(
           children: [
             Expanded(
-              child: SizedBox(
-                height: 64,
-                child: FilledButton.icon(
-                  onPressed: _exporting ? null : () => _export(png: false),
-                  icon: const Icon(Icons.table_chart),
-                  label: const Text('EXPORT CSV'),
-                ),
+              child: GlowButton(
+                label: 'Export CSV',
+                icon: LucideIcons.fileSpreadsheet,
+                height: 60,
+                fontSize: 16,
+                busy: _exporting && !_exportingPng,
+                onPressed: _exporting ? null : () => _export(png: false),
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: SizedBox(
-                height: 64,
-                child: FilledButton.icon(
-                  onPressed: _exporting ? null : () => _export(png: true),
-                  icon: const Icon(Icons.image),
-                  label: const Text('EXPORT PNG'),
-                ),
+              child: GlowButton(
+                label: 'Export PNG',
+                icon: LucideIcons.fileImage,
+                height: 60,
+                fontSize: 16,
+                colors: const [Color(0xFF0E7490), Color(0xFF1D4ED8)],
+                busy: _exporting && _exportingPng,
+                onPressed: _exporting ? null : () => _export(png: true),
               ),
             ),
           ],
         ),
-        if (_exporting)
-          const Padding(
-            padding: EdgeInsets.only(top: 10),
-            child: LinearProgressIndicator(),
-          ),
-        const SizedBox(height: 8),
-        const Text(
+        const SizedBox(height: 12),
+        const HintText(
           'Export opens the share menu: save to Drive / Files, or send by '
           'WhatsApp or Gmail. A copy is also kept inside the app.',
-          style: _muted,
+          icon: LucideIcons.share2,
         ),
       ],
     );
   }
 
-  Widget _summaryGrid(SectionSummary m) {
-    final items = <List<String>>[
-      ['WIDTH', '${m.width.toStringAsFixed(2)} m'],
-      ['LOWEST (BED)', '${m.lowest.toStringAsFixed(2)} m'],
-      ['LEFT BANK', '${m.leftBank.toStringAsFixed(2)} m'],
-      ['RIGHT BANK', '${m.rightBank.toStringAsFixed(2)} m'],
-      ['BED BELOW LOWER BANK', '${m.depth.toStringAsFixed(2)} m'],
-      ['AREA BELOW LOWER BANK', '${m.area.toStringAsFixed(2)} m²'],
+  Widget _summaryGrid(SectionSummary m, AppColors c) {
+    final items = <(IconData, String, String, Color?)>[
+      (
+        LucideIcons.moveHorizontal,
+        'Width',
+        '${m.width.toStringAsFixed(2)} m',
+        null
+      ),
+      (
+        LucideIcons.droplet,
+        'Lowest (bed)',
+        '${m.lowest.toStringAsFixed(2)} m',
+        c.water
+      ),
+      (
+        LucideIcons.arrowRightFromLine,
+        'Left bank',
+        '${m.leftBank.toStringAsFixed(2)} m',
+        c.accent
+      ),
+      (
+        LucideIcons.arrowLeftFromLine,
+        'Right bank',
+        '${m.rightBank.toStringAsFixed(2)} m',
+        c.accent
+      ),
+      (
+        LucideIcons.trendingDown,
+        'Bed below lower bank',
+        '${m.depth.toStringAsFixed(2)} m',
+        c.water
+      ),
+      (
+        LucideIcons.chartArea,
+        'Area below lower bank',
+        '${m.area.toStringAsFixed(2)} m²',
+        null
+      ),
     ];
     return LayoutBuilder(
-      builder: (context, c) {
-        final w = (c.maxWidth - 8) / 2;
+      builder: (context, box) {
+        final cols = box.maxWidth >= 640 ? 3 : 2;
+        final w = (box.maxWidth - 10 * (cols - 1)) / cols;
         return Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: 10,
+          runSpacing: 10,
           children: [
-            for (final it in items)
-              SizedBox(width: w, child: _stat(it[0], it[1])),
+            for (var i = 0; i < items.length; i++)
+              SizedBox(
+                width: w,
+                child: FadeSlideIn(
+                  index: i,
+                  child: StatTile(
+                    icon: items[i].$1,
+                    label: items[i].$2,
+                    value: items[i].$3,
+                    color: items[i].$4,
+                  ),
+                ),
+              ),
           ],
         );
       },
     );
   }
+}
+
+/// Pulsing rings behind the GPS icon while fixes are arriving.
+class _Radar extends StatefulWidget {
+  const _Radar({required this.active, required this.child});
+
+  final bool active;
+  final Widget child;
+
+  @override
+  State<_Radar> createState() => _RadarState();
+}
+
+class _RadarState extends State<_Radar> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1600));
+
+  void _sync() {
+    if (widget.active && !Motion.reduced(context)) {
+      if (!_c.isAnimating) _c.repeat();
+    } else {
+      _c.stop();
+      _c.value = 0;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant _Radar old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 34,
+      height: 34,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, child) => CustomPaint(
+          painter: _RadarPainter(_c.value, widget.active),
+          child: child,
+        ),
+        child: Center(child: widget.child),
+      ),
+    );
+  }
+}
+
+class _RadarPainter extends CustomPainter {
+  _RadarPainter(this.t, this.active);
+
+  final double t;
+  final bool active;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = size.center(Offset.zero);
+    final r = size.shortestSide / 2;
+    canvas.drawCircle(c, r * 0.78, Paint()..color = Colors.white.withAlpha(40));
+    if (!active) return;
+    for (final phase in [0.0, 0.5]) {
+      final v = (t + phase) % 1;
+      canvas.drawCircle(
+        c,
+        r * (0.55 + 0.6 * v),
+        Paint()
+          ..color = Colors.white.withAlpha((120 * (1 - v)).round())
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RadarPainter old) =>
+      old.t != t || old.active != active;
+}
+
+/// Reveals the chart from left to right (bank to bank).
+class _RevealClipper extends CustomClipper<Rect> {
+  _RevealClipper(this.t);
+
+  final double t;
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width * t, size.height);
+
+  @override
+  bool shouldReclip(covariant _RevealClipper old) => old.t != t;
 }
