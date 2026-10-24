@@ -18,6 +18,8 @@ class ChartStyle {
     required this.groundFill,
     required this.lowPoint,
     required this.scale,
+    this.pointFill = const Color(0xFFFFFFFF),
+    this.halo = const Color(0xD9FFFFFF),
   });
 
   final Color background;
@@ -28,6 +30,12 @@ class ChartStyle {
   final Color ground;
   final Color groundFill;
   final Color lowPoint;
+
+  /// Inside of the point markers.
+  final Color pointFill;
+
+  /// Background behind point labels so they stay readable over the line.
+  final Color halo;
 
   /// Multiplies all font sizes, line widths and margins.
   final double scale;
@@ -41,6 +49,21 @@ class ChartStyle {
     ground: Color(0xFF5D4037),
     groundFill: Color(0x66BCAAA4),
     lowPoint: Color(0xFF1565C0),
+    scale: 1.0,
+  );
+
+  /// On-screen chart for dark mode (labels meet 4.5:1 on the background).
+  static const ChartStyle screenDark = ChartStyle(
+    background: Color(0xFF0F1C17),
+    text: Color(0xFFE8F3EE),
+    subtext: Color(0xFFA3B8AD),
+    grid: Color(0xFF213029),
+    axis: Color(0xFF8AA197),
+    ground: Color(0xFFD6A77A),
+    groundFill: Color(0x40D6A77A),
+    lowPoint: Color(0xFF38BDF8),
+    pointFill: Color(0xFF0F1C17),
+    halo: Color(0xD90F1C17),
     scale: 1.0,
   );
 
@@ -333,7 +356,7 @@ class SectionPainter extends CustomPainter {
       final low = i == lowIdx;
       final c = Offset(xs[i], ys[i]);
       canvas.drawCircle(
-          c, (low ? 5 : 4) * f, Paint()..color = low ? style.lowPoint : Colors.white);
+          c, (low ? 5 : 4) * f, Paint()..color = low ? style.lowPoint : style.pointFill);
       canvas.drawCircle(
         c,
         (low ? 5 : 4) * f,
@@ -370,7 +393,7 @@ class SectionPainter extends CustomPainter {
         final tp = textPainter(
             texts[i], labelSize, low ? style.lowPoint : style.text,
             weight: low ? FontWeight.bold : FontWeight.normal,
-            halo: const Color(0xD9FFFFFF));
+            halo: style.halo);
         if (vertical) {
           drawText(canvas, tp, Offset(xs[i], ys[i] - 8 * f),
               ax: 0, ay: 0.5, angle: -math.pi / 2);

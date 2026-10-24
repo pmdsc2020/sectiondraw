@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -13,6 +14,9 @@ class SectionStore extends ChangeNotifier {
 
   /// Seconds of GPS readings averaged for each captured point (0 = single fix).
   int avgSeconds = 5;
+
+  /// Light, dark or follow the phone setting.
+  ThemeMode themeMode = ThemeMode.system;
 
   File? _file;
   bool _saving = false;
@@ -29,6 +33,10 @@ class SectionStore extends ChangeNotifier {
         final j = jsonDecode(txt) as Map<String, dynamic>;
         avgSeconds = (j['avgSeconds'] as num? ?? 5).toInt();
         if (!const [0, 5, 10].contains(avgSeconds)) avgSeconds = 5;
+        themeMode = ThemeMode.values.firstWhere(
+          (m) => m.name == j['theme'],
+          orElse: () => ThemeMode.system,
+        );
         sections
           ..clear()
           ..addAll([
@@ -53,6 +61,7 @@ class SectionStore extends ChangeNotifier {
         'app': 'SectionDraw',
         'version': 1,
         'avgSeconds': avgSeconds,
+        'theme': themeMode.name,
         'sections': [for (final s in sections) s.toJson()],
       };
 
@@ -100,6 +109,16 @@ class SectionStore extends ChangeNotifier {
 
   void deleteSection(CrossSection s) {
     sections.removeWhere((x) => x.id == s.id);
+    save();
+  }
+
+  /// System -> Light -> Dark -> System.
+  void cycleTheme() {
+    themeMode = switch (themeMode) {
+      ThemeMode.system => ThemeMode.light,
+      ThemeMode.light => ThemeMode.dark,
+      ThemeMode.dark => ThemeMode.system,
+    };
     save();
   }
 

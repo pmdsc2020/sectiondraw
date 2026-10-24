@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'home_screen.dart';
+import 'splash_screen.dart';
 import 'storage.dart';
+import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -11,50 +13,30 @@ Future<void> main() async {
 }
 
 class SectionDrawApp extends StatelessWidget {
-  const SectionDrawApp({super.key, required this.store});
+  const SectionDrawApp({super.key, required this.store, this.splash = true});
 
   final SectionStore store;
 
+  /// Play the opening logo animation before the home screen.
+  final bool splash;
+
+  static final ThemeData _light = buildTheme(Brightness.light);
+  static final ThemeData _dark = buildTheme(Brightness.dark);
+
   @override
   Widget build(BuildContext context) {
-    const green = Color(0xFF1B5E20);
-    return MaterialApp(
-      title: 'SectionDraw',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: green),
-        scaffoldBackgroundColor: const Color(0xFFF4F6F3),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: green,
-          foregroundColor: Colors.white,
-          centerTitle: false,
-          titleTextStyle: TextStyle(
-            color: Colors.white,
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        filledButtonTheme: FilledButtonThemeData(
-          style: FilledButton.styleFrom(
-            minimumSize: const Size(64, 60),
-            textStyle:
-                const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14)),
-          ),
-        ),
-        outlinedButtonTheme: OutlinedButtonThemeData(
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size(64, 56),
-            textStyle:
-                const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14)),
-          ),
-        ),
+    return ListenableBuilder(
+      listenable: store,
+      builder: (context, _) => MaterialApp(
+        title: 'SectionDraw',
+        debugShowCheckedModeBanner: false,
+        theme: _light,
+        darkTheme: _dark,
+        themeMode: store.themeMode,
+        themeAnimationDuration: const Duration(milliseconds: 400),
+        themeAnimationCurve: Curves.easeOutCubic,
+        home: splash ? SplashScreen(store: store) : HomeScreen(store: store),
       ),
-      home: HomeScreen(store: store),
     );
   }
 }

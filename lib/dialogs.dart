@@ -1,4 +1,36 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
+import 'theme.dart';
+
+/// Round tinted badge shown at the top of dialogs.
+class DialogBadge extends StatelessWidget {
+  const DialogBadge(this.icon, {super.key, this.color});
+
+  final IconData icon;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = color ?? context.scheme.primary;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.6, end: 1),
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutBack,
+      builder: (context, v, child) => Transform.scale(scale: v, child: child),
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          color: c.withAlpha(30),
+          shape: BoxShape.circle,
+          border: Border.all(color: c.withAlpha(70)),
+        ),
+        child: Icon(icon, color: c, size: 26),
+      ),
+    );
+  }
+}
 
 /// Single text-field dialog. Returns the text, or null if cancelled.
 Future<String?> askText(
@@ -9,6 +41,7 @@ Future<String?> askText(
   String help = '',
   bool numeric = false,
   String okText = 'SAVE',
+  IconData icon = LucideIcons.pencil,
 }) {
   return showDialog<String>(
     context: context,
@@ -19,6 +52,7 @@ Future<String?> askText(
       help: help,
       numeric: numeric,
       okText: okText,
+      icon: icon,
     ),
   );
 }
@@ -31,6 +65,7 @@ class _TextDialog extends StatefulWidget {
     required this.help,
     required this.numeric,
     required this.okText,
+    required this.icon,
   });
 
   final String title;
@@ -39,6 +74,7 @@ class _TextDialog extends StatefulWidget {
   final String help;
   final bool numeric;
   final String okText;
+  final IconData icon;
 
   @override
   State<_TextDialog> createState() => _TextDialogState();
@@ -57,6 +93,7 @@ class _TextDialogState extends State<_TextDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      icon: DialogBadge(widget.icon),
       title: Text(widget.title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -65,31 +102,32 @@ class _TextDialogState extends State<_TextDialog> {
           TextField(
             controller: _c,
             autofocus: true,
-            style: const TextStyle(fontSize: 20),
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w500),
             keyboardType: widget.numeric
                 ? const TextInputType.numberWithOptions(
                     decimal: true, signed: true)
                 : TextInputType.text,
             decoration: InputDecoration(
               labelText: widget.label.isEmpty ? null : widget.label,
-              border: const OutlineInputBorder(),
             ),
             onSubmitted: (v) => Navigator.pop(context, v),
           ),
           if (widget.help.isNotEmpty) ...[
             const SizedBox(height: 10),
-            Text(widget.help, style: const TextStyle(color: Colors.black54)),
+            Text(widget.help,
+                style: TextStyle(fontSize: 14, color: context.colors.muted)),
           ],
         ],
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('CANCEL'),
+          child: const Text('Cancel'),
         ),
-        FilledButton(
+        FilledButton.icon(
           onPressed: () => Navigator.pop(context, _c.text),
-          child: Text(widget.okText),
+          icon: const Icon(LucideIcons.check, size: 18),
+          label: Text(widget.okText),
         ),
       ],
     );
@@ -103,20 +141,28 @@ Future<bool> confirm(
   required String message,
   String yes = 'YES',
   bool danger = false,
+  IconData? icon,
 }) async {
   final r = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
+      icon: DialogBadge(
+        icon ?? (danger ? LucideIcons.trash2 : LucideIcons.circleHelp),
+        color: danger ? ctx.colors.danger : null,
+      ),
       title: Text(title),
-      content: Text(message, style: const TextStyle(fontSize: 16)),
+      content: Text(message),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(ctx, false),
-          child: const Text('CANCEL'),
+          child: const Text('Cancel'),
         ),
         FilledButton(
+          // White on #B91C1C is 6.4:1, readable in both themes.
           style: danger
-              ? FilledButton.styleFrom(backgroundColor: const Color(0xFFC62828))
+              ? FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB91C1C),
+                  foregroundColor: Colors.white)
               : null,
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(yes),
