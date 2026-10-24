@@ -234,12 +234,11 @@ ThemeData buildTheme(Brightness b) {
     textTheme: textTheme,
     scaffoldBackgroundColor: c.bgTop,
     extensions: [c],
-    splashFactory: InkSparkle.splashFactory,
+    // Apple platforms keep Flutter's default transition; newer Flutter
+    // versions no longer export the Cupertino builder from material.dart.
     pageTransitionsTheme: const PageTransitionsTheme(builders: {
       TargetPlatform.android: FadeForwardsPageTransitionsBuilder(),
-      TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
       TargetPlatform.linux: FadeForwardsPageTransitionsBuilder(),
-      TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
       TargetPlatform.windows: FadeForwardsPageTransitionsBuilder(),
     }),
     appBarTheme: AppBarTheme(
