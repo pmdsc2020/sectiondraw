@@ -11,3 +11,4 @@ build/
 android/local.properties
 android/.gradle/
 *.apk
+pubspec.lock
